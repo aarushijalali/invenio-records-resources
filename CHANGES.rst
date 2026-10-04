@@ -2,12 +2,68 @@
     SPDX-FileCopyrightText: 2020-2024 CERN.
     SPDX-FileCopyrightText: 2024-2026 Graz University of Technology.
     SPDX-FileCopyrightText: 2025 Northwestern University.
-    SPDX-FileCopyrightText: 2025 KTH Royal Institute of Technology.
+    SPDX-FileCopyrightText: 2025-2026 KTH Royal Institute of Technology.
     SPDX-FileCopyrightText: 2026 TU Wien.
     SPDX-License-Identifier: MIT
 
 Changes
 =======
+
+Version v11.1.1 (released 2026-09-23)
+
+- fix(files): retry metadata extraction on StaleDataError
+
+Version v11.1.0 (released 2026-09-21)
+
+- files: release database connections while local and fetch uploads stream to storage.
+
+- refactor(schemas): instantiate schemas in the service constructors
+    * instead of freshly initializing marshmallow schemas inside fresh
+      service schema wrappers each time the `schema` property is called, we
+      initialize the schema and its wrapper in the services' constructors
+      and simply reuse the objects over the lifetime of the service
+    * the properties are still kept to minimize churn for now
+
+- refactor(schemas): initialize schema immediately in the service wrapper
+    * instead of constructing fresh schema instances every time we need one,
+      we construct the instance once and simply reuse that instance over the
+      lifetime of the service schema wrapper
+    * instead of passing `schema_args` to the schema constructor, we pass
+      them to `load()` and `dump()`
+
+    Co-authored-by: Saksham Arora <sakshamarora1001@gmail.com>
+
+- fix(schemas): get service via a context var instead of from the object
+    * the `context_schema` acts as a dynamic reference to the current
+      context-local value of some variable, similar to local proxies
+    * this allows us to access the desired variable's value without having
+      to explicitly track evolving references by e.g. creating new schema
+      instances whenever the value changes
+
+    Co-authored-by: Saksham Arora <sakshamarora1001@gmail.com>
+
+- fix(files): set default_preview/order after copying files
+    FilesManager.sync() validated default_preview and order against the
+    destination's file set before copying the source's files over.
+
+    That meant that publishing a draft that edited the files, setting a
+    newly added file as the default preview failed with `InvalidKeyError:
+    No file with key "..."`. Moved both assignments to after the bucket
+    sync, and added a regression test.
+
+Version v11.0.4 (released 2026-09-17)
+
+- fix(tests): changed minio to rustfs
+- i18n: update string formatting
+
+Version v11.0.3 (released 2026-08-13)
+
+- fix(files): retry metadata extraction after publication
+
+Version v11.0.2 (released 2026-08-04)
+
+- fix(build): include mo files
+- fix(ci): run tests on maint-*
 
 Version v11.0.1 (released 2026-07-16)
 

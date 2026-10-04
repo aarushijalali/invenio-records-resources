@@ -63,6 +63,7 @@ class FetchTransfer(RemoteTransferBase):
                 service_id=self.file_service.id,
                 record_id=record.pid.pid_value,
                 file_key=file.key,
+                file_record_id=str(file.id),
             )
         )
         return file
@@ -74,13 +75,20 @@ class FetchTransfer(RemoteTransferBase):
     def commit_file(self):
         """Commit the file."""
         super().commit_file()
+        # The source URL is no longer needed after the file becomes local.
+        transfer_metadata = dict(self.file_record.transfer)
+        transfer_metadata.pop("url", None)
+        self.file_record.transfer.set(transfer_metadata)
         self.file_record.transfer.transfer_type = LOCAL_TRANSFER_TYPE
         self.uow.register(RecordCommitOp(self.file_record))
 
     @property
     def status(self):
         """Get the status of the transfer."""
-        # always return completed for remote files
         if self.file_record.transfer.get("error"):
             return TransferStatus.FAILED
-        return super().status
+        return (
+            TransferStatus.COMPLETED
+            if self.file_record.is_readable
+            else TransferStatus.PENDING
+        )

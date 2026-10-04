@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2020-2026 CERN.
 # SPDX-FileCopyrightText: 2020-2021 Northwestern University.
 # SPDX-FileCopyrightText: 2025 CESNET i.a.l.e.
+# SPDX-FileCopyrightText: 2026 TU Wien.
 # SPDX-License-Identifier: MIT
 
 """File Service API."""
@@ -22,10 +23,29 @@ from ..errors import (
 from ..records.schema import ServiceSchemaWrapper
 from ..uow import RecordCommitOp, unit_of_work
 from .schema import InitFileSchemaMixin
+from .upload import FileUpload
 
 
 class FileService(Service):
     """A service for adding files support to records."""
+
+    def __init__(self, config):
+        """Constructor."""
+        super().__init__(config)
+        self._file_schema = ServiceSchemaWrapper(self, schema=self.config.file_schema)
+        if not hasattr(self.config, "initial_file_schema"):
+            self.config.initial_file_schema = type(
+                self.config.file_schema.__name__ + "Initial",
+                (
+                    InitFileSchemaMixin,
+                    self.config.file_schema,
+                ),
+                {},
+            )
+        self._initial_file_schema = ServiceSchemaWrapper(
+            self, schema=self.config.initial_file_schema
+        )
+        self.file_upload = FileUpload(self)
 
     @property
     def record_cls(self):
@@ -40,21 +60,12 @@ class FileService(Service):
         For the creation of a new file, use the `initial_file_schema` property
         as it will include the necessary fields for initiating the file upload.
         """
-        return ServiceSchemaWrapper(self, schema=self.config.file_schema)
+        return self._file_schema
 
     @property
     def initial_file_schema(self):
         """Returns the data schema instance for initiating the file upload."""
-        if not hasattr(self.config, "initial_file_schema"):
-            self.config.initial_file_schema = type(
-                self.config.file_schema.__name__ + "Initial",
-                (
-                    InitFileSchemaMixin,
-                    self.config.file_schema,
-                ),
-                {},
-            )
-        return ServiceSchemaWrapper(self, schema=self.config.initial_file_schema)
+        return self._initial_file_schema
 
     def file_result_item(self, *args, **kwargs):
         """Create a new instance of the resource unit."""
@@ -172,8 +183,9 @@ class FileService(Service):
         # if user has permission for the transfer type that is on
         # each of the uploaded files. This is done in the IfTransferType
         # permission generator.
-        schema = self.initial_file_schema.schema(many=True)
-        data = schema.load(data)
+        data, _ = self.initial_file_schema.load(
+            data, schema_args={"many": True}, raise_errors=True
+        )
 
         if not data:
             raise ValidationError("No files to upload.")
@@ -249,7 +261,11 @@ class FileService(Service):
         :raises FileKeyNotFoundError: If the record has no file for the ``file_key``
         """
         record = self._get_record(
-            id_, identity, "create_files", file_key=file_key, **kwargs
+            id_,
+            identity,
+            "extract_file_metadata",
+            file_key=file_key,
+            **kwargs,
         )
         file_record = record.files[file_key]
 
@@ -293,7 +309,6 @@ class FileService(Service):
             links_tpl=self.file_links_item_tpl(id_),
         )
 
-    @unit_of_work()
     def delete_file(self, identity, id_, file_key, uow=None, **kwargs):
         """Delete a single file.
 
@@ -302,14 +317,9 @@ class FileService(Service):
         record = self._get_record(
             id_, identity, "delete_files", file_key=file_key, **kwargs
         )
-        deleted_file = record.files.delete(file_key, remove_rf=True)
-
-        self.run_components(
-            "delete_file", identity, id_, file_key, record, deleted_file, uow=uow
+        deleted_file = self.file_upload.delete_file(
+            identity, id_, record, file_key, uow
         )
-
-        # We also commit the record in case the file was the `default_preview`
-        uow.register(RecordCommitOp(record))
 
         return self.file_result_item(
             self,
@@ -319,19 +329,10 @@ class FileService(Service):
             links_tpl=self.file_links_item_tpl(id_),
         )
 
-    @unit_of_work()
     def delete_all_files(self, identity, id_, uow=None, **kwargs):
         """Delete all the files of the record."""
         record = self._get_record(id_, identity, "delete_files", **kwargs)
-
-        # We have to separate the gathering of the keys from their deletion
-        # because of how record.files is implemented.
-        file_keys = [fk for fk in record.files]
-        results = [record.files.delete(file_key) for file_key in file_keys]
-
-        self.run_components("delete_all_files", identity, id_, record, results, uow=uow)
-
-        uow.register(RecordCommitOp(record))
+        results = self.file_upload.delete_all_files(identity, id_, record, uow)
 
         return self.file_result_list(
             self,
@@ -342,9 +343,16 @@ class FileService(Service):
             links_item_tpl=self.file_links_item_tpl(id_),
         )
 
-    @unit_of_work()
     def set_file_content(
-        self, identity, id_, file_key, stream, content_length=None, uow=None, **kwargs
+        self,
+        identity,
+        id_,
+        file_key,
+        stream,
+        content_length=None,
+        uow=None,
+        expected_file_record_id=None,
+        **kwargs,
     ):
         """Save file content.
 
@@ -359,26 +367,21 @@ class FileService(Service):
             content_length=content_length,
             **kwargs,
         )
-        errors = None
-        try:
-            self.run_components(
-                "set_file_content",
-                identity,
-                id_,
-                file_key,
-                stream,
-                content_length,
-                record,
-                uow=uow,
-            )
-            file = record.files[file_key]
-
-        except FailedFileUploadException as e:
-            file = e.file
-            current_app.logger.exception("File upload transfer failed.")
-            # we gracefully fail so that uow can commit the cleanup operation in
-            # FileContentComponent
-            errors = _("File upload transfer failed.")
+        file, error = self.file_upload.set_content(
+            identity,
+            id_,
+            record,
+            file_key,
+            stream,
+            content_length,
+            uow,
+            expected_file_record_id=expected_file_record_id,
+        )
+        errors = []
+        if error is not None:
+            if not isinstance(error, FailedFileUploadException):
+                current_app.logger.error("File upload transfer failed: %s", error)
+            errors.append(_("File upload transfer failed."))
 
         return self.file_result_item(
             self,
@@ -447,7 +450,7 @@ class FileService(Service):
         :raises FileKeyNotFoundError: If the record has no file for the ``file_key``
         """
         record = self._get_record(id_, identity, "set_content_files", file_key=file_key)
-        errors = None
+        errors = []
         try:
             self.run_components(
                 "set_multipart_file_content",
@@ -467,7 +470,7 @@ class FileService(Service):
             current_app.logger.exception("File upload transfer failed.")
             # we gracefully fail so that uow can commit the cleanup operation in
             # FileContentComponent
-            errors = "File upload transfer failed."
+            errors.append(_("File upload transfer failed."))
 
         return self.file_result_item(
             self,

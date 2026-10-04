@@ -1,7 +1,8 @@
-# SPDX-FileCopyrightText: 2020-2024 CERN.
+# SPDX-FileCopyrightText: 2020-2026 CERN.
 # SPDX-FileCopyrightText: 2020 European Union.
 # SPDX-FileCopyrightText: 2025 CESNET.
 # SPDX-FileCopyrightText: 2025 Graz University of Technology.
+# SPDX-FileCopyrightText: 2026 TU Wien.
 # SPDX-License-Identifier: MIT
 
 """File schema."""
@@ -13,6 +14,7 @@ from marshmallow import RAISE, Schema, ValidationError, post_dump, pre_load, val
 from marshmallow.fields import UUID, Boolean, Dict, Integer, Nested, Str
 from marshmallow_oneofschema import OneOfSchema
 from marshmallow_utils.fields import GenMethod, Links, SanitizedUnicode, TZDateTime
+from marshmallow_utils.context import context_schema
 
 from ...proxies import current_transfer_registry
 
@@ -25,7 +27,7 @@ class BaseTransferSchema(Schema):
     """
 
     type_ = Str(attribute="type", data_key="type", required=True)
-    """Transfer type. Required field, the initial transfer type is filled 
+    """Transfer type. Required field, the initial transfer type is filled
     automatically by the InitFileSchema."""
 
     class Meta:
@@ -103,13 +105,13 @@ class FileSchema(Schema):
     size = Integer(dump_only=True)
     transfer = Nested(TransferSchema, dump_only=True)
     status = GenMethod("dump_status")
-    transfer = Nested(TransferSchema, dump_only=True)
 
     def dump_status(self, obj):
         """Dump file status."""
+        ctx = context_schema.get()
         transfer = current_transfer_registry.get_transfer(
             file_record=obj,
-            file_service=self.context.get("service"),
+            file_service=ctx.get("service"),
             record=obj.record,
         )
         return transfer.status
@@ -123,7 +125,7 @@ class FileSchema(Schema):
         # We need to access the file attributes from the wrapped FileInstance
         # as getattr on the wrapper raises AttributeError if the attribute
         # is set to None.
-        if original.file is not None and original.file.file is not None:
+        if original.has_content:
             obj["checksum"] = original.file.file.checksum
             obj["size"] = original.file.file.size
             obj["storage_class"] = original.file.file.storage_class
